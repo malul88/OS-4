@@ -237,7 +237,7 @@ void test_reuse_after_free() {
             *(p[i]+j) = DATA[i][j];
         }
     }
-    //assert_state(initial, expected);
+    assert_state(initial, expected);
     assert(check_data(heap, DATA, 4, BLOCK_SIZES));
 
     /* free blocks 0, 1, 3: */
@@ -460,15 +460,13 @@ static void callTestFunction(void (*func)()) {
 
 int main()
 {
-    std::cout << "test_malloc_then_free" << std::endl;
-    //callTestFunction(test_malloc_then_free);
-    test_malloc_then_free();
-    std::cout << "test_reuse_after_free" << std::endl;
-    //callTestFunction(test_reuse_after_free);
-    test_reuse_after_free();
-    std::cout << "test_calloc" << std::endl;
-    callTestFunction(test_calloc);
-    std::cout << "test_realloc" << std::endl;
+//    std::cout << "test_malloc_then_free" << std::endl;
+//    callTestFunction(test_malloc_then_free);
+//    std::cout << "test_reuse_after_free" << std::endl;
+//    callTestFunction(test_reuse_after_free);
+//    std::cout << "test_calloc" << std::endl;
+//    callTestFunction(test_calloc);
+//    std::cout << "test_realloc" << std::endl;
     callTestFunction(test_realloc);
     std::cout << "test_failures" << std::endl;
     callTestFunction(test_failures);

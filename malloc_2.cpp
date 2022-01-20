@@ -14,7 +14,7 @@ void* smalloc(size_t size){
         if (tmp->size >= size && tmp->is_free){
             tmp->is_free = false;
             tmp->real_size = size;
-            return tmp + sizeof(*tmp);
+            return (char*)tmp + sizeof(*tmp);
         }
         tmp = tmp->next;
     }
@@ -41,7 +41,7 @@ void* scalloc(size_t num, size_t size) {
         if (tmp->size >= size && tmp->is_free) {
             tmp->is_free = false;
             tmp->real_size = size;
-            memset(tmp + sizeof(*tmp),size + 1, 0);
+            memset((char *)tmp + sizeof(*tmp),0, size);
             return (char*)tmp + sizeof(tmp);
         }
         tmp = tmp->next;
@@ -51,7 +51,7 @@ void* scalloc(size_t num, size_t size) {
     if (*(int *) new_sector == -1) {
         return nullptr;
     }
-    memset(new_sector + size_of_meta, size, 0);
+    memset((char*)new_sector + size_of_meta, 0, size);
     new_sector->is_free = false;
     new_sector->size = size;
     new_sector->real_size = size;
