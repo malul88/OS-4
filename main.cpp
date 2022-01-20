@@ -1,44 +1,29 @@
 /*
-HOW TO RUN? (easiest(?) method)
-a. copy the code
-b. paste it in main.cpp file inside a clion project that includes three files:
-	1. main.cpp (with this code pasted in it.)
-	2. malloc_2.h (yours, theoretically you don't HAVE TO have one a .h)
-	3. malloc_2.cpp (yours)
-c. run/Debug
+g++ malloc_2.cpp -fPIC -shared -o libmal.so
+g++ tamuz_tests_hw4.cpp -L ./ -lmal
 
-
-NOTE1: this code uses forking and calls your functions from child process. expect difficulties setting breakpoints in your code when debugging with clion.
-       if you still wish to set BP, you need to address this issue
-
-NOTE2: you can run it with GDB or CLI if you wish.
-
-NOTE3: it seems (from my understanding of the way the tests were coded) that srealloc(NULL, <somesize>); was supposed to act like smalloc(<somesize>);.
-       if i didnt miss anything, in our HW oldp=NULL is not addreseed in srealloc. therefore expect SEGFAULT in srealloc. one easy fix is:
-       		- if srealloc was called with NULL == oldp and size == <somesize>, call smalloc(<somesize>), check ret_val and return it. since i didnt see out staff address such a call, i assume it 			  will not happen and therefore do whatever is needed to keep the test from getting angry and SEGFAULTing.
-
-IMPORTANT_NOTE: I HOLD NO responsability for these tests no to their results, they may be faulty and it's up to YOU to decide, if you wish to use them.
-
+export LD_LIBRARY_PATH="/root/hw4/"
  */
 
-#include "malloc_2.h"
+#include <unistd.h>
 #include <assert.h>
 #include <cstdlib>
 #include <sys/wait.h>
 #include <iostream>
+#include "malloc_3.h"
 
 #define assert_state(_initial, _expected)\
 	do {\
-		assert(_num_free_blocks() - _initial.free_blocks == _expected.free_blocks); \
-		assert(_num_free_bytes() - _initial.free_bytes == _expected.free_bytes); \
 		assert(_num_allocated_blocks() - _initial.allocated_blocks == _expected.allocated_blocks); \
 		assert(_num_allocated_bytes() - _initial.allocated_bytes == _expected.allocated_bytes); \
+		assert(_num_free_blocks() - _initial.free_blocks == _expected.free_blocks); \
+		assert(_num_free_bytes() - _initial.free_bytes == _expected.free_bytes); \
 		assert(_num_meta_data_bytes() - _initial.meta_data_bytes == _expected.meta_data_bytes); \
 	} while (0)
 
 typedef unsigned char byte;
 const int BLOCK_MAX_COUNT=10, BLOCK_MAX_SIZE=10, LAST=9999;
-const byte GARBAGE=255;
+const byte GARBAGE=255, META=254;
 
 typedef struct {
     size_t free_blocks, free_bytes, allocated_blocks, allocated_bytes,
@@ -51,7 +36,6 @@ size_t _num_allocated_blocks();
 size_t _num_allocated_bytes();
 size_t _num_meta_data_bytes();
 size_t _size_meta_data();
-void *sbrk(intptr_t);
 
 /*******************************************************************************
  *  AUXILIARY FUNCTIONS
@@ -65,18 +49,15 @@ void get_initial_state(HeapState &initial) {
     initial.meta_data_bytes = _num_meta_data_bytes();
 }
 
-void get_block_addresses(byte **arr, byte *heap, const size_t SIZES[], int count) {
-    const size_t MT = _size_meta_data();
-    arr[0] = heap;
-    for (int i=1; i<count; ++i)
-        arr[i] = arr[i-1] + SIZES[i-1] + MT;
+size_t round(size_t size) {
+    return ((size-1)/4+1)*4;
 }
 
 /* Tells the test-function that we're expecting a new block to be allocated on
  * the heap. Then the test-function has to check if this actually happenned.*/
 void add_expected_block(HeapState &state, size_t size) {
     state.allocated_blocks++;
-    state.allocated_bytes += size;
+    state.allocated_bytes += round(size);
     state.meta_data_bytes += _size_meta_data();
 }
 
@@ -84,7 +65,7 @@ void add_expected_block(HeapState &state, size_t size) {
  * freed. Then the test-function has to check if this actually happenned.*/
 void free_expected_block(HeapState &state, size_t size) {
     state.free_blocks++;
-    state.free_bytes += size;
+    state.free_bytes += round(size);
 }
 
 /* Tells the test-function that a previously-freed block should be "un-freed"
@@ -92,359 +73,488 @@ void free_expected_block(HeapState &state, size_t size) {
  * actually happenned.*/
 void reuse_expected_block(HeapState &state, size_t size) {
     state.free_blocks--;
-    state.free_bytes -= size;
+    state.free_bytes -= round(size);
 }
 
-
-/* Checks that the heap data, stored at pointer "heap", is identical to the
- * expected data. "count" is the number of blocks that are supposed to be
- * allocated. "sizes" is an ordered list of the blocks' sizes; generally this
- * list has too many items so this function will only test the first "count"
- * items. */
-bool check_data(byte *heap, const byte expected[BLOCK_MAX_COUNT][BLOCK_MAX_SIZE],
-                int count, const size_t sizes[BLOCK_MAX_COUNT]) {
-    heap += _size_meta_data();
-    for (int i=0; i<count; ++i) {
-        for (size_t j=0; j<sizes[i]; ++j) {
-            if (expected[i][j] != GARBAGE && expected[i][j] != *heap)
-                return false;
-            ++heap;
-        }
-        heap += _size_meta_data();
-    }
-    return true;
+/* Tells the tests that some two blocks were supposed to be merged now. */
+void merge_expected_block(HeapState &state) {
+    state.free_blocks--;
+    state.free_bytes += _size_meta_data();
+    state.allocated_blocks--;
+    state.allocated_bytes += _size_meta_data();
+    state.meta_data_bytes -= _size_meta_data();
 }
 
 byte* malloc_byte(int count) {
-    return static_cast<byte*>(smalloc(sizeof(byte)*count));
+    return static_cast<byte*>(malloc(sizeof(byte)*count));
 }
 
 byte* calloc_byte(int count) {
-    return static_cast<byte*>(scalloc(count, sizeof(byte)));
+    return static_cast<byte*>(calloc(count, sizeof(byte)));
 }
 
 byte* realloc_byte(void *oldp, size_t size) {
-    return static_cast<byte*>(srealloc(oldp, size));
+    return static_cast<byte*>(realloc(oldp, size));
 }
 
-/* Copies a 2-dimensional array into another. Only copy the first "count" rows,
- * and in the i row only copy the first sizes[i] items. */
-void fill_data(const byte source[BLOCK_MAX_COUNT][BLOCK_MAX_SIZE],
-               byte *target[BLOCK_MAX_COUNT], const int count,
-               const size_t sizes[BLOCK_MAX_COUNT]) {
-    for (int i=0; i<count; ++i)
-        for (int j=0; j<sizes[i]; ++j)
-            target[i][j] = source[i][j];
+void copy (byte *from, byte *to, int count) {
+    for (int i=0; i<count; ++i) to[i] = from[i];
+}
+
+void range(byte *target, int from, int count) {
+    for (int i=0; i<count; ++i) target[i] = from+i;
+}
+
+bool check_heap_straight(byte *heap, byte *expected, int count) {
+    heap += _size_meta_data();
+    for (int i=0; i<count; ++i) {
+        if (expected[i] == GARBAGE)
+            ++heap;
+        else if (expected[i] == META)
+            heap += _size_meta_data();
+        else {
+            if (expected[i] != *heap)
+                return false;
+            ++heap;
+        }
+    }
+    return true;
 }
 
 /*******************************************************************************
  *  TESTS
  ******************************************************************************/
 
-void test_malloc_then_free() {
-    /* Expected sizes of memory blocks after all allocations: */
-    const size_t BLOCK_SIZES[BLOCK_MAX_COUNT] = {3, 8, 1, 7, LAST};
-
-    /* Expected data in heap. The first group are the bytes in the first block,
-     * the second group for the second block, etc. . Of course the blocks are
-     * different sizes but I had to make the array's size constant, so the tests
-     * just ignore the bytes after the end of the block. */
-    const byte DATA[BLOCK_MAX_COUNT][BLOCK_MAX_SIZE] =
-            {{1,2,3}, {11,12,13,14,15,16,17,18}, {20}, {1,2,3,4,5,6,7}, {static_cast<byte>(LAST)}};
-
-    /* Pointer to beginning of heap. Will be used later when I test that the
-     * heap looks exactly as I expect it to. */
+void test_basic_malloc_and_free() {
     byte *heap = static_cast<byte*>(sbrk(0));
-
-    /* Initial heap state (_num_allocated_blocks, etc.). Theoretically it should
-     * be all zeros, but sometimes the programs uses malloc before my tests even
-     * run and I want to ignore everything that was malloc'ed before then. */
-    HeapState initial;
+    HeapState initial, expected = {0,0,0,0,0};
     get_initial_state(initial);
 
-    /* This variable will hold the expected state of the heap (_num_allocated_blocks,
-     * etc.). I will compare it to the actual state as part of the tests. */
-    HeapState expected = {0,0,0,0,0};
+    byte DATA[] = {1,GARBAGE,GARBAGE,GARBAGE,META, 2,3,4,5,META,
+                   6,7,8,9,10,GARBAGE,GARBAGE,GARBAGE};
 
-    byte *p[4];
+    byte *p1,*p2,*p3;
+    p1 = malloc_byte(1);
+    add_expected_block(expected, 1);
+    assert_state(initial, expected);
+    p2 = malloc_byte(4);
+    add_expected_block(expected, 4);
+    assert_state(initial, expected);
+    p3 = malloc_byte(5);
+    add_expected_block(expected, 5);
+    assert_state(initial, expected);
 
-    /* Allocate block 0 and fill with data */
-    p[0] = static_cast<byte*>(smalloc(BLOCK_SIZES[0]));
-    add_expected_block(expected, BLOCK_SIZES[0]);
+    p1[0] = 1;
+    p2[0]=2;p2[1]=3;p2[2]=4;p2[3]=5;
+    p3[0]=6;p3[1]=7;p3[2]=8;p3[3]=9;p3[4]=10;
     assert_state(initial, expected);
-    for (int j=0; j<BLOCK_SIZES[0]; ++j)
-        *(p[0]+j) = DATA[0][j];
-    assert(check_data(heap, DATA, 1, BLOCK_SIZES));
+    assert(check_heap_straight(heap, DATA, 18));
 
-    /* Allocate block 1 */
-    p[1] = static_cast<byte*>(smalloc(BLOCK_SIZES[1]));
-    add_expected_block(expected, BLOCK_SIZES[1]);
+    free(p1);
+    free_expected_block(expected, 1);
     assert_state(initial, expected);
-    for (int j=0; j<BLOCK_SIZES[1]; ++j)
-        *(p[1]+j) = DATA[1][j];
-    assert(check_data(heap, DATA, 2, BLOCK_SIZES));
+    DATA[0] = GARBAGE;
+    assert(check_heap_straight(heap, DATA, 18));
 
-    /* Allocate block 2 */
-    p[2] = static_cast<byte*>(smalloc(BLOCK_SIZES[2]));
-    add_expected_block(expected, BLOCK_SIZES[2]);
+    free(p2);
+    free_expected_block(expected, 4);
+    merge_expected_block(expected);
     assert_state(initial, expected);
-    for (int j=0; j<BLOCK_SIZES[2]; ++j)
-        *(p[2]+j) = DATA[2][j];
-    assert(check_data(heap, DATA, 3, BLOCK_SIZES));
+    DATA[5]=GARBAGE; DATA[6]=GARBAGE; DATA[7]=GARBAGE; DATA[8]=GARBAGE;
+    assert(check_heap_straight(heap, DATA, 18));
 
-    /* Allocate block 3 */
-    p[3] = static_cast<byte*>(smalloc(BLOCK_SIZES[3]));
-    add_expected_block(expected, BLOCK_SIZES[3]);
-    assert_state(initial, expected);
-    for (int j=0; j<BLOCK_SIZES[3]; ++j)
-        *(p[3]+j) = DATA[3][j];
-    assert(check_data(heap, DATA, 4, BLOCK_SIZES));
-
-    /* Free all */
-    sfree(p[0]);
-    free_expected_block(expected, BLOCK_SIZES[0]);
-    assert_state(initial, expected);
-    sfree(p[1]);
-    free_expected_block(expected, BLOCK_SIZES[1]);
-    assert_state(initial, expected);
-    sfree(p[2]);
-    free_expected_block(expected, BLOCK_SIZES[2]);
-    assert_state(initial, expected);
-    sfree(p[3]);
-    free_expected_block(expected, BLOCK_SIZES[3]);
+    free(p3);
+    free_expected_block(expected, 5);
+    merge_expected_block(expected);
     assert_state(initial, expected);
 }
 
-void test_reuse_after_free() {
-    const size_t BLOCK_SIZES[BLOCK_MAX_COUNT] = {3, 8, 1, 7, 9, 2, LAST};
-    byte DATA[BLOCK_MAX_COUNT][BLOCK_MAX_SIZE] =
-            {{1,2,3}, {11,12,13,14,15,16,17,18}, {20}, {21,22,23,24,25,26,27},
-             {31,32,33,34,35,36,37,38,39}, {91, 92}, {static_cast<byte>(LAST)}};
-    byte re1[] = {111,112,113,114,115};
-    byte re3[] = {101, 102, 103, 104, 105, 106, 107};
+void test_malloc_wilderness() {
     byte *heap = static_cast<byte*>(sbrk(0));
-    HeapState initial;
+    HeapState initial, expected = {0,0,0,0,0};
     get_initial_state(initial);
 
-    HeapState expected = {0,0,0,0,0};
-    byte *p[6];
+    byte D8A[8], D8B[8], D4[4], D12[12], HEAP[21];
+    range(D8A, 0, 8); range(D8B, 10, 8); range(D4, 20, 4); range(D12, 100, 12);
+    copy(D12, HEAP, 12); HEAP[12] = META; copy(D8A, HEAP+13, 8);
 
-    /* allocate and copy first 4 arrays: */
-    for (int i=0; i<4; ++i) {
-        p[i] = static_cast<byte*>(smalloc(BLOCK_SIZES[i]));
-        add_expected_block(expected, BLOCK_SIZES[i]);
-        for (int j = 0; j < BLOCK_SIZES[i]; ++j) {
-            *(p[i]+j) = DATA[i][j];
-        }
-    }
-    assert_state(initial, expected);
-    assert(check_data(heap, DATA, 4, BLOCK_SIZES));
+    byte *p1, *p2;
 
-    /* free blocks 0, 1, 3: */
-    sfree(p[3]);
-    free_expected_block(expected, BLOCK_SIZES[3]);
+    /* All following allocations should take place at the beginning of the heap */
+    p1 = malloc_byte(8);
+    add_expected_block(expected, 8);
     assert_state(initial, expected);
-    sfree(p[0]);
-    free_expected_block(expected, BLOCK_SIZES[0]);
-    assert_state(initial, expected);
-    sfree(p[1]);
-    free_expected_block(expected, BLOCK_SIZES[1]);
-    assert_state(initial, expected);
-    for (int i=0; i<3; ++i)
-        DATA[0][i] = GARBAGE;
-    for (int i=0; i<8; ++i)
-        DATA[1][i] = GARBAGE;
-    for (int i=0; i<7; ++i)
-        DATA[3][i] = GARBAGE;
+    copy(D8A, p1, 8);
+    assert(check_heap_straight(heap, D8A, 8));
 
-    /* malloc should reuse block 1 then 3: */
-    p[1] = static_cast<byte*>(smalloc(sizeof(byte)*5));
-    reuse_expected_block(expected, BLOCK_SIZES[1]);
+    free(p1);
+    free_expected_block(expected, 8);
     assert_state(initial, expected);
-    for (int i=0; i<5; ++i) {
-        *(p[1]+i) = re1[i];
-        DATA[1][i] = re1[i];
-    }
 
-    p[3] = static_cast<byte*>(smalloc(sizeof(byte)*7));
-    reuse_expected_block(expected, BLOCK_SIZES[3]);
+    p1 = malloc_byte(8);
+    reuse_expected_block(expected, 8);
     assert_state(initial, expected);
-    for (int i=0; i<7; ++i) {
-        *(p[3]+i) = re3[i];
-        DATA[3][i] = re3[i];
-    }
+    copy(D8B, p1, 8);
+    assert(check_heap_straight(heap, D8B, 8));
 
-    check_data(heap, DATA, 4, BLOCK_SIZES);
-
-    /* now need to allocate more space: */
-    p[4] = static_cast<byte*>(smalloc(BLOCK_SIZES[4]));
-    add_expected_block(expected, BLOCK_SIZES[4]);
+    free(p1);
+    free_expected_block(expected, 8);
     assert_state(initial, expected);
-    for (int i=0; i<BLOCK_SIZES[4]; ++i)
-        *(p[4]+i) = DATA[4][i];
-    check_data(heap, DATA, 5, BLOCK_SIZES);
 
-    /* reuse block 0: */
-    p[0] = static_cast<byte*>(smalloc(sizeof(byte)));
-    reuse_expected_block(expected, BLOCK_SIZES[0]);
+    p1 = malloc_byte(4);
+    reuse_expected_block(expected, 8);
     assert_state(initial, expected);
-    *(p[0]) = 200;
-    DATA[0][0] = 200;
-    check_data(heap, DATA, 5, BLOCK_SIZES);
+    copy(D4, p1, 4);
+    assert(check_heap_straight(heap, D4, 4));
 
-    /* allocate last block: */
-    p[5] = static_cast<byte*>(smalloc(BLOCK_SIZES[5]));
-    add_expected_block(expected, BLOCK_SIZES[5]);
+    free(p1);
+    free_expected_block(expected, 8);
     assert_state(initial, expected);
-    for (int i=0; i<BLOCK_SIZES[5]; ++i)
-        *(p[5]+i) = DATA[5][i];
-    check_data(heap, DATA, 6, BLOCK_SIZES);
 
-    /* free block 3 again */
-    sfree(p[3]);
-    free_expected_block(expected, BLOCK_SIZES[3]);
+    p1 = malloc_byte(12);
+    expected.allocated_bytes = 12;
+    expected.free_bytes = 0;
+    expected.free_blocks = 0;
+    assert_state(initial, expected);
+    copy(D12, p1, 12);
+    assert(check_heap_straight(heap, D12, 12));
+
+    /* Now allocate a second block */
+    p2 = malloc_byte(4);
+    add_expected_block(expected, 4);
+    assert_state(initial, expected);
+    free(p2);
+    free_expected_block(expected, 4);
+    assert_state(initial, expected);
+
+    p2 = malloc_byte(8);
+    expected.free_blocks = 0;
+    expected.free_bytes = 0;
+    expected.allocated_bytes += 4;
+    assert_state(initial, expected);
+    copy(D8A, p2, 8);
+    assert(check_heap_straight(heap, HEAP, 21));
+
+    /* Free */
+    free(p2);
+    free_expected_block(expected, 8);
+    assert_state(initial, expected);
+    free(p1);
+    free_expected_block(expected, 12);
+    merge_expected_block(expected);
     assert_state(initial, expected);
 }
 
 void test_calloc() {
-    const size_t BLOCK_SIZES[BLOCK_MAX_COUNT] = {1,2,3, LAST};
-    byte DATA[BLOCK_MAX_COUNT][BLOCK_MAX_SIZE] =
-            {{10}, {20,21}, {30,31,32}, {static_cast<byte>(LAST)}};
-    const byte ZEROS[BLOCK_MAX_COUNT][BLOCK_MAX_SIZE] = {{},{},{},{static_cast<byte>(LAST)}};
     byte *heap = static_cast<byte*>(sbrk(0));
-    HeapState initial;
+    HeapState initial, expected = {0,0,0,0,0};
     get_initial_state(initial);
 
-    HeapState expected = {0,0,0,0,0};
-    byte *p[BLOCK_MAX_COUNT];
+    byte ZEROS[6] = { }, DATA[] = {0,1,2,3,4,5};
 
-    /* Calloc 3 blocks, then fill them with data */
-    for (int i=0; i<3; ++i) {
-        p[i] = calloc_byte(BLOCK_SIZES[i]);
-        add_expected_block(expected, BLOCK_SIZES[i]);
-    }
+    byte *p, *p2;
+    p = calloc_byte(3);
+    add_expected_block(expected, 3);
     assert_state(initial, expected);
-    assert(check_data(heap, ZEROS, 3, BLOCK_SIZES));
-    fill_data(DATA, p, 3, BLOCK_SIZES);
-    assert(check_data(heap, DATA, 3, BLOCK_SIZES));
+    assert(check_heap_straight(heap, ZEROS, 3));
 
-    /* Free second block */
-    sfree(p[1]);
-    free_expected_block(expected, BLOCK_SIZES[1]);
+    p[0]=0; p[1]=1; p[2]=2;
+    assert(check_heap_straight(heap, DATA, 3));
+    free(p);
+    free_expected_block(expected, 3);
     assert_state(initial, expected);
 
-    /* Re-allocate using calloc */
-    p[1] = calloc_byte(BLOCK_SIZES[1]);
-    reuse_expected_block(expected, BLOCK_SIZES[1]);
+    p = calloc_byte(6);
+    expected.allocated_bytes = 8;
+    expected.free_bytes = 0;
+    expected.free_blocks = 0;
     assert_state(initial, expected);
-    DATA[1][0] = 0;
-    DATA[1][1] = 0;
-    assert(check_data(heap, DATA, 3, BLOCK_SIZES));
+    assert(check_heap_straight(heap, ZEROS, 6));
+    copy(DATA, p, 6);
+    assert(check_heap_straight(heap, DATA, 6));
+
+    free(p);
+    free_expected_block(expected, 6);
+    assert_state(initial, expected);
 }
 
-void test_realloc() {
-    const size_t BLOCK_SIZES[BLOCK_MAX_COUNT] = {3,4,5, LAST};
-    byte DATA[BLOCK_MAX_COUNT][BLOCK_MAX_SIZE] =
-            {{1,2,3}, {1,2,3,4}, {11,12,13,14,15}, {static_cast<byte>(LAST)}};
+void test_malloc_split_and_merge() {
     byte *heap = static_cast<byte*>(sbrk(0));
-    HeapState initial;
+    HeapState initial, expected = {0,0,0,0,0};
+    get_initial_state(initial);
+    const size_t METASIZE = _size_meta_data();
+
+    byte DATA[220];
+    range(DATA, 0, 133 + 2*METASIZE);
+    int i = 132 + 2*METASIZE;
+    DATA[++i] = GARBAGE; DATA[++i] = GARBAGE; DATA[++i] = GARBAGE; DATA[++i] = META;
+    DATA[++i] = 0; DATA[++i] = 1; DATA[++i] = 2; DATA[++i] = GARBAGE; DATA[++i] = META;
+    DATA[++i] = 0; DATA[++i] = 1; DATA[++i] = 2; DATA[++i] = GARBAGE;
+
+    byte *p1, *p2, *p3, *p1b;
+
+    /* make 3 allocations */
+    p1 = malloc_byte(133 + 2*METASIZE);
+    add_expected_block(expected, 133 + 2*METASIZE);
+    assert_state(initial, expected);
+    p2 = malloc_byte(3);
+    add_expected_block(expected, 3);
+    assert_state(initial, expected);
+    p3 = malloc_byte(3);
+    add_expected_block(expected, 3);
+    assert_state(initial, expected);
+
+    copy(DATA, p1, 133 + 2*METASIZE);
+    p2[0]=0; p2[1]=1; p2[2]=2;
+    p3[0]=0; p3[1]=1; p3[2]=2;
+    assert(check_heap_straight(heap, DATA, 136+2*METASIZE+8+2));
+
+    /* release p1. then reuse and split it, then reuse and split again. */
+    free(p1);
+    free_expected_block(expected, 133+2*METASIZE);
+    assert_state(initial, expected);
+    p1b = malloc_byte(2);
+    expected.allocated_blocks++;
+    expected.allocated_bytes -= METASIZE;
+    expected.free_bytes -= (4 + METASIZE);
+    expected.meta_data_bytes += METASIZE;
+    assert_state(initial, expected);
+    p1 = malloc_byte(4);
+    expected.allocated_blocks++;
+    expected.allocated_bytes -= METASIZE;
+    expected.free_bytes -= (4 + METASIZE);
+    expected.meta_data_bytes += METASIZE;
+    assert_state(initial, expected);
+    p1b[0]=201;p1b[1]=201;
+    p1[0]=200;p1[1]=200;p1[2]=200;p1[3]=200;
+
+    assert(heap[0+METASIZE]==201);
+    assert(heap[1+METASIZE]==201);
+    assert(heap[4+2*METASIZE]==200);
+    assert(heap[5+2*METASIZE]==200);
+    assert(heap[6+2*METASIZE]==200);
+    assert(heap[7+2*METASIZE]==200);
+    assert(p2[0]==0);
+    assert(p2[1]==1);
+    assert(p2[2]==2);
+    assert(p3[0]==0);
+    assert(p3[1]==1);
+    assert(p3[2]==2);
+
+    /* release p3 then p2. assert that p2 is merged with both adjucent blocks. */
+    free(p3);
+    free_expected_block(expected, 3);
+    assert_state(initial, expected);
+    free(p2);
+    free_expected_block(expected, 3);
+    merge_expected_block(expected);
+    merge_expected_block(expected);
+    assert_state(initial, expected);
+
+    free(p1b);
+    free(p1);
+    free_expected_block(expected, 4);
+    free_expected_block(expected, 2);
+    merge_expected_block(expected);
+    merge_expected_block(expected);
+    assert_state(initial, expected);
+}
+
+void test_realloc_just_contract() {
+    byte *heap = static_cast<byte*>(sbrk(0));
+    HeapState initial, expected = {0,0,0,0,0};
     get_initial_state(initial);
 
-    HeapState expected = {0,0,0,0,0};
-    byte *p1, *p2, *p3;
+    byte *p1, *p2, *p;
+    p1 = realloc_byte(NULL, 4);
+    add_expected_block(expected, 4);
+    assert_state(initial, expected);
+    p2 = realloc_byte(NULL, 7);
+    add_expected_block(expected, 7);
+    assert_state(initial, expected);
 
-    /* Allocate first */
-    p1 = realloc_byte(NULL, BLOCK_SIZES[0]);
-    add_expected_block(expected, BLOCK_SIZES[0]);
+    free(p1);
+    free_expected_block(expected, 4);
     assert_state(initial, expected);
-    fill_data(DATA, &p1, 1, BLOCK_SIZES);
-    assert(check_data(heap, DATA, 1, BLOCK_SIZES));
+    p = realloc_byte(p2, 3);
+    assert_state(initial, expected);
+    assert(p==p2);
 
-    /* Reallocate to same size (do nothing) */
-    p1 = realloc_byte(p1, BLOCK_SIZES[0]);
+    free(p);
+    free_expected_block(expected, 7);
+    merge_expected_block(expected);
     assert_state(initial, expected);
-    assert(check_data(heap, DATA, 1, BLOCK_SIZES));
+}
 
-    /* Reallocate to bigger */
-    p2 = realloc_byte(p1, BLOCK_SIZES[1]);
-    add_expected_block(expected, BLOCK_SIZES[1]);
-    free_expected_block(expected, BLOCK_SIZES[0]);
-    DATA[0][0] = GARBAGE; DATA[0][1] = GARBAGE; DATA[0][2] = GARBAGE;
-    p2[3] = DATA[1][3];
-    assert_state(initial, expected);
-    assert(check_data(heap, DATA, 2, BLOCK_SIZES));
+void test_realloc_split_then_merge() {
+    byte *heap = static_cast<byte*>(sbrk(0));
+    HeapState initial, expected = {0,0,0,0,0};
+    get_initial_state(initial);
 
-    /* Reallocate to smaller (do nothing) */
-    p2 = realloc_byte(p2, BLOCK_SIZES[0]);
+    byte *p1, *p1b, *p2, *p3;
+    p1 = realloc_byte(NULL, 200);
+    add_expected_block(expected, 200);
     assert_state(initial, expected);
-    DATA[1][3] = GARBAGE;
-    assert(check_data(heap, DATA, 2, BLOCK_SIZES));
+    p3 = realloc_byte(NULL, 200);
+    add_expected_block(expected, 200);
+    assert_state(initial, expected);
 
-    /* New allocation (too big to reuse previous freed allocation) */
-    p3 = realloc_byte(NULL, BLOCK_SIZES[2]);
-    add_expected_block(expected, BLOCK_SIZES[2]);
+    free(p3);
+    free_expected_block(expected, 200);
     assert_state(initial, expected);
-    for (int i=0; i<BLOCK_SIZES[2]; ++i)
-        p3[i] = DATA[2][i];
-    assert(check_data(heap, DATA, 3, BLOCK_SIZES));
+    p1b = realloc_byte(p1, 4);  // shrink p1, split it, and the remainder is merged with p3
+    assert(p1b==p1);
+    expected.free_bytes += 200 - 4;
+    assert_state(initial, expected);
 
-    /* Free data that was already freed by realloc (do nothing) */
-    sfree(p1);
+    p2 = realloc_byte(NULL, 1);
+    expected.allocated_bytes -= _size_meta_data();
+    expected.allocated_blocks++;
+    expected.meta_data_bytes += _size_meta_data();
+    expected.free_bytes -= (4 + _size_meta_data());
     assert_state(initial, expected);
-    assert(check_data(heap, DATA, 3, BLOCK_SIZES));
+    assert(p2 == p1b+4+_size_meta_data());
+}
 
-    /* New allocation - reuse freed area */
-    p1 = realloc_byte(NULL, 1);
-    reuse_expected_block(expected, BLOCK_SIZES[0]);
-    assert_state(initial, expected);
-    assert(check_data(heap, DATA, 1, BLOCK_SIZES));
+void test_realloc_merge_then_split() {
+    byte *heap = static_cast<byte*>(sbrk(0));
+    HeapState initial, expected = {0,0,0,0,0};
+    get_initial_state(initial);
 
-    /* Free everything */
-    sfree(p1);
-    free_expected_block(expected, BLOCK_SIZES[0]);
+    byte *p1, *p2, *p;
+    p1 = realloc_byte(NULL, 4);
+    p2 = realloc_byte(NULL, 200);
+    add_expected_block(expected, 4);
+    add_expected_block(expected, 200);
     assert_state(initial, expected);
-    sfree(p2);
-    free_expected_block(expected, BLOCK_SIZES[1]);
+
+    free(p2);
+    free_expected_block(expected, 200);
     assert_state(initial, expected);
-    sfree(p3);
-    free_expected_block(expected, BLOCK_SIZES[2]);
+
+    p = realloc_byte(p1, 7);
+    assert(p==p1);
+    expected.free_bytes -= 4;
+    assert_state(initial, expected);
+}
+
+void test_realloc_on_wilderness() {
+    byte *heap = static_cast<byte*>(sbrk(0));
+    HeapState initial, expected = {0,0,0,0,0};
+    get_initial_state(initial);
+
+    byte *p1, *p2;
+    p1 = realloc_byte(NULL, 4);
+    add_expected_block(expected, 4);
+    assert_state(initial, expected);
+    p2 = realloc_byte(p1, 5);
+    expected.allocated_bytes += 4;
+    assert_state(initial, expected);
+    assert(p1==p2);
+
+    free(p2);
+    free_expected_block(expected, 8);
+    assert_state(initial, expected);
+}
+
+void test_realloc_copy_to_wilderness() {
+    byte *heap = static_cast<byte*>(sbrk(0));
+    HeapState initial, expected = {0,0,0,0,0};
+    get_initial_state(initial);
+
+    byte *p1,*p2,*p3,*p4;
+    p1 = realloc_byte(NULL, 4);
+    p2 = realloc_byte(NULL, 4);
+    p3 = realloc_byte(NULL, 4);
+    add_expected_block(expected, 4);
+    add_expected_block(expected, 4);
+    add_expected_block(expected, 4);
+    assert_state(initial, expected);
+    free(p3);
+    free_expected_block(expected, 4);
+
+    p4 = realloc_byte(p1, 8);
+    assert(p4 == p3);
+    expected.allocated_bytes += 4;
+    assert_state(initial, expected);
+
+    free(p1);  //do nothing
+    assert_state(initial, expected);
+    free(p2);  //merged to p1
+    free_expected_block(expected, 4);
+    merge_expected_block(expected);
+    assert_state(initial, expected);
+    free(p3);  //merged to previous;
+    free_expected_block(expected, 8);
+    merge_expected_block(expected);
     assert_state(initial, expected);
 }
 
 void test_failures() {
     byte *heap = static_cast<byte*>(sbrk(0));
-    HeapState initial;
+    HeapState initial, expected = {0,0,0,0,0};
     get_initial_state(initial);
-    byte *p;
-    HeapState expected = {0,0,0,0,0};
+    const int BIG = int(1e8)+10;
 
-    assert(!smalloc(0));
-    assert(!smalloc(long(1e8 + 10)));
-    assert(!scalloc(sizeof(byte), 0));
-    assert(!scalloc(sizeof(byte), (long(1e8 + 10))));
+    byte *p, *p2;
+    p = malloc_byte(0);
+    assert(p==NULL);
+    assert_state(initial, expected);
+    p = malloc_byte(BIG);
+    assert(p==NULL);
+    assert_state(initial, expected);
+    p = calloc_byte(0);
+    assert(p==NULL);
+    assert_state(initial, expected);
+    p = calloc_byte(BIG);
+    assert(p==NULL);
+    assert_state(initial, expected);
+    p = realloc_byte(NULL, 0);
+    assert(p==NULL);
+    assert_state(initial, expected);
+    p = realloc_byte(NULL, BIG);
+    assert(p==NULL);
+    assert_state(initial, expected);
+    free(NULL);
     assert_state(initial, expected);
 
-    assert(p = malloc_byte(1));
+    p = malloc_byte(1);
     add_expected_block(expected, 1);
     assert_state(initial, expected);
-    *p = 10;
-    assert(!srealloc(p, 0));
-    assert(!srealloc(p, (long(1e8 + 10))));
+    p[0] = 1;
+    assert(*(heap + _size_meta_data()) == 1);
+    p2 = realloc_byte(p, 0);
+    assert(p2 == NULL);
     assert_state(initial, expected);
-    assert(*p == 10);
+    assert(*(heap + _size_meta_data()) == 1);
+    p2 = realloc_byte(p, BIG);
+    assert(p2 == NULL);
+    assert_state(initial, expected);
+    assert(*(heap + _size_meta_data()) == 1);
 
-    sfree(NULL);
-    assert_state(initial, expected);
-    sfree(p);
+    free(p);
     free_expected_block(expected, 1);
     assert_state(initial, expected);
-    sfree(NULL);
+    free(p);
     assert_state(initial, expected);
 }
 
 /*******************************************************************************
  *  MAIN
  ******************************************************************************/
+
+void align() {
+    void *heap = sbrk(0);
+    int inc = (size_t)(heap) % 4;
+    void *result;
+    if (inc) {
+        result = sbrk(inc);
+        if (result == (void*)-1) {
+            std::cout << "can't test, failed to align heap base" << std::endl;
+            exit(1);
+        }
+    }
+}
 
 static void callTestFunction(void (*func)()) {
     if (!fork()) {  // test as son, to get a clear heap
@@ -453,22 +563,39 @@ static void callTestFunction(void (*func)()) {
     } else {		// father waits for son before continuing to next test
         int exit_status = 0;
         wait(&exit_status);
-        if (exit_status)
-            std::cout << "*** FAILED with exit status " << exit_status << std::endl;
+        if (!exit_status)
+            return;
+        if (WIFEXITED(exit_status) && WEXITSTATUS(exit_status))
+            std::cout << "Exit status ERROR " << WEXITSTATUS(exit_status) << ". ";
+        if (WIFSIGNALED(exit_status))
+            std::cout << "Error signal " << WTERMSIG(exit_status);
+        std::cout << std::endl;
     }
 }
 
 int main()
 {
-    std::cout << "test_malloc_then_free" << std::endl;
-    callTestFunction(test_malloc_then_free);
-    std::cout << "test_reuse_after_free" << std::endl;
-    callTestFunction(test_reuse_after_free);
+    align();
+    std::cout << "test_basic_malloc_and_free" << std::endl;
+    callTestFunction(test_basic_malloc_and_free);
+    std::cout << "test_malloc_wilderness" << std::endl;
+    callTestFunction(test_malloc_wilderness);
     std::cout << "test_calloc" << std::endl;
     callTestFunction(test_calloc);
-    std::cout << "test_realloc" << std::endl;
-    callTestFunction(test_realloc);
+    std::cout << "test_malloc_split_and_merge" << std::endl;
+    callTestFunction(test_malloc_split_and_merge);
+    std::cout << "test_realloc_just_contract" << std::endl;
+    callTestFunction(test_realloc_just_contract);
+    std::cout << "test_realloc_split_then_merge" << std::endl;
+    callTestFunction(test_realloc_split_then_merge);
+    std::cout << "test_realloc_merge_then_split" << std::endl;
+    callTestFunction(test_realloc_merge_then_split);
+    std::cout << "test_realloc_on_wilderness" << std::endl;
+    callTestFunction(test_realloc_on_wilderness);
+    std::cout << "test_realloc_copy_to_wilderness" << std::endl;
+    callTestFunction(test_realloc_copy_to_wilderness);
     std::cout << "test_failures" << std::endl;
     callTestFunction(test_failures);
+    std::cout << "Done." << std::endl;
     return 0;
 }
