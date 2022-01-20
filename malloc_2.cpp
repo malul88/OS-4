@@ -77,8 +77,12 @@ void sfree(void* p){
 }
 
 void* srealloc(void* oldp, size_t size){
-    if (size == 0 || size > MAX_SIZE || !oldp){
+    if (size == 0 || size > MAX_SIZE){
         return nullptr;
+    }
+    if (!oldp){
+        oldp = smalloc(size);
+        return oldp;
     }
     size_t size_of_meta = sizeof(MallocMetadata);
     MallocMetadata* to_find = (MallocMetadata*)((char*)oldp - (char *)size_of_meta);
