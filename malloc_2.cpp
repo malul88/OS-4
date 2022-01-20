@@ -1,47 +1,9 @@
-#include <unistd.h>
-#include <cmath>
-#include <algorithm>
-#include <cstring>
 
-
-const int MAX_SIZE = pow(10, 8);
-
-class MallocMetadata{
-public:
-    size_t size;
-    size_t real_size;
-    bool is_free;
-    MallocMetadata* next;
-    MallocMetadata* prev;
-    MallocMetadata(): size(0), real_size(0), is_free(false), next(nullptr), prev(nullptr){}
-};
-
-class SectorList {
-public:
-    MallocMetadata *head;
-
-    SectorList() : head(nullptr) {}
-
-    int add(MallocMetadata *m) {
-        if (!m) {
-            return -1;
-        }
-        MallocMetadata *tmp = head;
-        if (head == nullptr) {
-            head = m;
-            return 0;
-        }
-        while (tmp->next) {
-            tmp = tmp->next;
-        }
-        tmp->next = m;
-        m->prev = tmp;
-        return 0;
-    }
-};
+#include "malloc_2.h"
 
 
 SectorList sectorList = SectorList();
+
 void* smalloc(size_t size){
     if (size == 0 || size > MAX_SIZE){
         return nullptr;
@@ -65,7 +27,7 @@ void* smalloc(size_t size){
     new_sector->size = size;
     new_sector->real_size = size;
     sectorList.add(new_sector);
-    return new_sector + size_of_meta;
+    return ((char*)new_sector + sizeof(*new_sector));
 }
 
 void* scalloc(size_t num, size_t size) {
@@ -74,12 +36,13 @@ void* scalloc(size_t num, size_t size) {
     }
     MallocMetadata *tmp = sectorList.head;
     // Search for available sector.
+    size *= num;
     while (tmp) {
         if (tmp->size >= size && tmp->is_free) {
             tmp->is_free = false;
             tmp->real_size = size;
-            std::fill(tmp + sizeof(*tmp), tmp + sizeof(*tmp) + size + 1, 0);
-            return tmp + sizeof(tmp);
+            memset(tmp + sizeof(*tmp),size + 1, 0);
+            return (char*)tmp + sizeof(tmp);
         }
         tmp = tmp->next;
     }
@@ -88,12 +51,12 @@ void* scalloc(size_t num, size_t size) {
     if (*(int *) new_sector == -1) {
         return nullptr;
     }
-    std::fill(new_sector + size_of_meta, new_sector + size_of_meta + size + 1, 0);
+    memset(new_sector + size_of_meta, size, 0);
     new_sector->is_free = false;
     new_sector->size = size;
     new_sector->real_size = size;
     sectorList.add(new_sector);
-    return new_sector + size_of_meta;
+    return (char*)new_sector + size_of_meta;
 }
 
 void sfree(void* p){
@@ -101,7 +64,7 @@ void sfree(void* p){
         return;
     }
     size_t size_of_meta = sizeof(MallocMetadata);
-    MallocMetadata* to_find = (MallocMetadata*)p - size_of_meta;
+    MallocMetadata* to_find = (MallocMetadata*)((char *)p - (char*)size_of_meta);
     MallocMetadata* tmp = sectorList.head;
     while (tmp){
         if (tmp == to_find){
@@ -118,7 +81,7 @@ void* srealloc(void* oldp, size_t size){
         return nullptr;
     }
     size_t size_of_meta = sizeof(MallocMetadata);
-    MallocMetadata* to_find = (MallocMetadata*)oldp - size_of_meta;
+    MallocMetadata* to_find = (MallocMetadata*)((char*)oldp - (char *)size_of_meta);
     MallocMetadata* tmp = sectorList.head;
     while (tmp){
         if (tmp == to_find){
@@ -193,6 +156,6 @@ size_t _num_meta_data_bytes(){
     return count;
 }
 size_t _size_meta_data(){
-    MallocMetadata* tmp = sectorList.head;
-    return sizeof(*tmp);
+    size_t res = sizeof(MallocMetadata);
+    return res;
 }
