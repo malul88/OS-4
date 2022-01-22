@@ -217,7 +217,7 @@ public:
     void *pullSector(MallocMetadata *m) {
         int idx = sizeToIdx(m->size);
         if (histograma[idx] == m){
-            histograma[idx] = nullptr;
+            histograma[idx] = m->Hist_next;
         }
         if (m->Hist_prev){
             m->Hist_prev->Hist_next = m->Hist_next;
@@ -462,11 +462,11 @@ void* _srealloc(MallocMetadata *m, size_t size) {
     }
     MallocMetadata *before = m->prev;
     MallocMetadata *after = m->next;
-    if (m->size >= size) { // Realloc for decreasing.
+    if (m->size >= size) {
         m->real_size = size;
-        if (m->size > m->real_size + sizeof(*m) + 128){
+        if (m->size > m->real_size + sizeof(*m) + 128) {
             return hist.split(m, m->real_size);
-        } else{
+        } else {
             return (char *) m + sizeof(*m);
         }
 
@@ -504,13 +504,18 @@ void* _srealloc(MallocMetadata *m, size_t size) {
             before->next->prev = before;
         }
         before->is_free = false;
+        before->size = before->size + m->size + after->size + 2 * sizeof(*m);
         memcpy((char *) before + sizeof(*before), (char *) m + sizeof(*m), m->real_size);
-        before->size += m->size + after->size + 2 * sizeof(*m);
         before->real_size = size + (2 * sizeof(*m));
         if (before->size > before->real_size + 128 + sizeof(*before)) {
             hist.split(before, before->real_size);
         }
         return (char *) before + sizeof(*before);
+    } else if (m == hist.last()) {
+        sbrk(size - m->size);
+        m->size = size;
+        m->real_size = size;
+        return (char *) m + sizeof(*m);
     } else if (MallocMetadata *res = hist.searchForFreeBlock(size)) { // Including wilderness
         memcpy((char *) res + sizeof(*res), (char *) m + sizeof(*m), m->real_size);
         res->is_free = false;
@@ -521,11 +526,6 @@ void* _srealloc(MallocMetadata *m, size_t size) {
             hist.split(res, res->real_size);
         }
         return (char *) res + sizeof(*res);
-    } else if (MallocMetadata *ress = hist.last()) {
-        sbrk(size - ress->size);
-        ress->size = size;
-        ress->real_size = size;
-        return (char *) ress + sizeof(*ress);
     } else {
         void *new_location = smalloc(size);
         if (!new_location) {
