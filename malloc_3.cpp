@@ -158,7 +158,11 @@ public:
 
     MallocMetadata *searchForFreeBlock(size_t size) {
         int idx = sizeToIdx(size);
-        MallocMetadata *tmp;
+        MallocMetadata *tmp = histograma[idx];
+        while(!tmp){        //
+            idx++;      //
+            tmp = histograma[idx];      //
+        }
         for (int i = idx; i < 128; ++i) {
             tmp = histograma[idx];
             while (tmp) {
@@ -190,7 +194,7 @@ public:
         // Splitting the sector.
         MallocMetadata* new_sector = (MallocMetadata*)((char *)m + sizeof(*m) + size);
         new_sector->is_free = true;
-        new_sector->size = m->size - size - (2 * (sizeof(*m)));
+        new_sector->size = m->size - size - (sizeof(*m)); //replace (2 * (sizeof(*m))) with (sizeof(*m))
         new_sector->real_size = 0;
         new_sector->next = m->next;
         new_sector->prev = m;
@@ -431,7 +435,7 @@ void* _srealloc(MallocMetadata *m, size_t size) {
         before->is_free = false;
         hist.pullSector(before);
         before->size += m->size + sizeof(*m);
-        before->real_size = size + sizeof(*m);
+        before->real_size = size; //# remove 'sizeof(*m)'
         memcpy((char *) before + sizeof(*before), (char *) m + sizeof(*m), m->real_size);
         if (before->size > before->real_size + 128 + sizeof(*before)) {
             hist.split(before, before->real_size);
