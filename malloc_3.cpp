@@ -92,7 +92,7 @@ public:
             return;
         }
         while (tmp){
-            if (tmp->addr == p){
+            if (tmp == p){
                 if (tmp_prev){
                     tmp_prev->next = tmp->next;
                 }
@@ -197,6 +197,9 @@ public:
         new_sector->size = m->size - size - (sizeof(*m)); //replace (2 * (sizeof(*m))) with (sizeof(*m))
         new_sector->real_size = 0;
         new_sector->next = m->next;
+        if (new_sector->next){
+            new_sector->next->prev = new_sector;
+        }
         new_sector->prev = m;
         m->next = new_sector;
         m->is_free = false;
@@ -208,7 +211,7 @@ public:
         //Adding the new sector to hist.
         add(new_sector, sizeToIdx(new_sector->size));
 
-        return m + sizeof(*m);
+        return (char*)m + sizeof(*m);
     }
 
     void *pullSector(MallocMetadata *m) {
@@ -244,6 +247,8 @@ void *newMappedRegion(size_t size);
 
 void* _srealloc(MallocMetadata *pMetadata, size_t size);
 
+void *reallocMappedRegion(void *pVoid, size_t size);
+
 Hist hist = Hist();
 
 void* smalloc(size_t size){
@@ -263,7 +268,7 @@ void* smalloc(size_t size){
             tmp->real_size = size;
             return hist.pullSector(tmp);
         }
-    // Create new Sector.
+        // Create new Sector.
     } else {
         size_t size_of_meta = sizeof(MallocMetadata);
         MallocMetadata* new_sector = (MallocMetadata *)(sbrk(size + size_of_meta));
@@ -280,7 +285,7 @@ void* smalloc(size_t size){
 
 void *newMappedRegion(size_t size) {
     size_t size_of_vm = sizeof(vm_area);
-    vm_area* new_area = (vm_area*)mmap(nullptr,size + size_of_vm, PROT_WRITE|PROT_READ, MAP_ANONYMOUS| MAP_PRIVATE, -1,0);
+    vm_area* new_area = (vm_area*)mmap(nullptr,size + size_of_vm, PROT_WRITE|PROT_READ, MAP_ANONYMOUS|MAP_PRIVATE, -1,0);
     if (new_area == MAP_FAILED){
         return nullptr;
     }
@@ -291,8 +296,11 @@ void *newMappedRegion(size_t size) {
 }
 
 void* scalloc(size_t num, size_t size) {
-    if (size == 0 || (size * num) > MAX_SIZE) {
+    if (num== 0 || size == 0 || (size * num) > MAX_SIZE) {
         return nullptr;
+    }
+    if (size*num >= MAX_SECTOR_SIZE){
+        return newMappedRegion(size*num);
     }
     size *= num;
     int idx = hist.sizeToIdx(size);
@@ -406,6 +414,9 @@ void* srealloc(void* oldp, size_t size){
     if (!oldp){
         return smalloc(size);
     }
+    if (size >= MAX_SECTOR_SIZE){
+        return reallocMappedRegion(oldp, size);
+    }
     size_t size_of_meta = sizeof(MallocMetadata);
     MallocMetadata* to_find = (MallocMetadata*)((char *)oldp - size_of_meta);
     MallocMetadata* tmp = sectorList.head;
@@ -419,14 +430,46 @@ void* srealloc(void* oldp, size_t size){
     return nullptr;
 }
 
+void *reallocMappedRegion(void *p, size_t size) {
+    vm_area* tmp = sectorList.mm_head;
+    bool has_found = false;
+    while (tmp){
+        if (tmp->addr == p){
+            has_found = true;
+            break;
+        }
+        tmp = tmp->next;
+    }
+    if (!has_found){
+        return nullptr;
+    }
+    void* res = newMappedRegion(size);
+    if (!res){
+        return nullptr;
+    }
+    if (tmp->size > size){
+        memcpy(res, tmp->addr, size);
+    } else {
+        memcpy(res, tmp->addr, tmp->size);
+    }
+    sectorList.removeRegion(tmp);
+    return res;
+}
+
 void* _srealloc(MallocMetadata *m, size_t size) {
     if (!m) {
         return nullptr;
     }
     MallocMetadata *before = m->prev;
     MallocMetadata *after = m->next;
-    if (m->size >= size) {
-        return (char *) m + sizeof(*m);
+    if (m->size >= size) { // Realloc for decreasing.
+        m->real_size = size;
+        if (m->size > m->real_size + sizeof(*m) + 128){
+            return hist.split(m, m->real_size);
+        } else{
+            return (char *) m + sizeof(*m);
+        }
+
     } else if (before && before->is_free && (m->size + before->size) >= size) {
         before->next = m->next;
         if (before->next) {
@@ -448,7 +491,7 @@ void* _srealloc(MallocMetadata *m, size_t size) {
             m->next->prev = m;
         }
         m->size += after->size + sizeof(*m);
-        m->real_size = size + sizeof(*m);
+        m->real_size = size;
         if (m->size > m->real_size + 128 + sizeof(*m)) {
             hist.split(m, m->real_size);
         }
