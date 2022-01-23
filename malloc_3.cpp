@@ -26,19 +26,20 @@ public:
             nullptr){}
 };
 
-class vm_area{
+class vm_area {
 public:
     size_t size;
-    void* addr;
-    vm_area* next;
+    void *addr;
+    vm_area *next;
 
-    vm_area(size_t size, void *addr):size(size), addr(addr), next(nullptr){}
+    vm_area(size_t size, void *addr) : size(size), addr(addr), next(nullptr) {}
 };
 
 class SectorList {
 public:
     MallocMetadata *head;
-    vm_area* mm_head;
+    vm_area *mm_head;
+
     SectorList() : head(nullptr), mm_head(nullptr) {}
 
     int add(MallocMetadata *m) {
@@ -57,7 +58,8 @@ public:
         m->prev = tmp;
         return 0;
     }
-    int addRegion(vm_area* addr){
+
+    int addRegion(vm_area *addr) {
         if (!addr) {
             return -1;
         }
@@ -74,9 +76,9 @@ public:
     }
 
     vm_area *searchRegion(void *p) {
-        vm_area* tmp = mm_head;
-        while (tmp){
-            if (tmp->addr == p){
+        vm_area *tmp = mm_head;
+        while (tmp) {
+            if (tmp->addr == p) {
                 return tmp;
             }
             tmp = tmp->next;
@@ -85,15 +87,15 @@ public:
     }
 
     void removeRegion(vm_area *p) {
-        vm_area* tmp = mm_head;
-        vm_area* tmp_prev = nullptr;
-        if (p == mm_head){
+        vm_area *tmp = mm_head;
+        vm_area *tmp_prev = nullptr;
+        if (p == mm_head) {
             mm_head = mm_head->next;
             return;
         }
-        while (tmp){
-            if (tmp == p){
-                if (tmp_prev){
+        while (tmp) {
+            if (tmp == p) {
+                if (tmp_prev) {
                     tmp_prev->next = tmp->next;
                 }
             }
@@ -106,15 +108,15 @@ public:
 
 SectorList sectorList = SectorList();
 
-MallocMetadata* _findWilderness(){
-    MallocMetadata* tmp = sectorList.head;
-    if (!tmp){
+MallocMetadata* _findWilderness() {
+    MallocMetadata *tmp = sectorList.head;
+    if (!tmp) {
         return nullptr;
     }
-    while (tmp->next){
+    while (tmp->next) {
         tmp = tmp->next;
     }
-    if (tmp->is_free){
+    if (tmp->is_free) {
         return tmp;
     } else {
         return nullptr;
@@ -159,7 +161,7 @@ public:
     MallocMetadata *searchForFreeBlock(size_t size) {
         int idx = sizeToIdx(size);
         MallocMetadata *tmp = histograma[idx];
-        while(!tmp){        //
+        while (!tmp) {        //
             idx++;      //
             tmp = histograma[idx];      //
         }
@@ -173,9 +175,9 @@ public:
             }
         }
         tmp = _findWilderness();
-        if (tmp){
-            void* res = sbrk(size - tmp->size);
-            if (*(int*)res == -1){
+        if (tmp) {
+            void *res = sbrk(size - tmp->size);
+            if (*(int *) res == -1) {
                 return nullptr;
             } else {
                 pullSector(tmp);
@@ -192,12 +194,12 @@ public:
         pullSector(m);
 
         // Splitting the sector.
-        MallocMetadata* new_sector = (MallocMetadata*)((char *)m + sizeof(*m) + size);
+        MallocMetadata *new_sector = (MallocMetadata *) ((char *) m + sizeof(*m) + size);
         new_sector->is_free = true;
         new_sector->size = m->size - size - (sizeof(*m)); //replace (2 * (sizeof(*m))) with (sizeof(*m))
         new_sector->real_size = 0;
         new_sector->next = m->next;
-        if (new_sector->next){
+        if (new_sector->next) {
             new_sector->next->prev = new_sector;
         }
         new_sector->prev = m;
@@ -211,31 +213,31 @@ public:
         //Adding the new sector to hist.
         add(new_sector, sizeToIdx(new_sector->size));
 
-        return (char*)m + sizeof(*m);
+        return (char *) m + sizeof(*m);
     }
 
     void *pullSector(MallocMetadata *m) {
         int idx = sizeToIdx(m->size);
-        if (histograma[idx] == m){
+        if (histograma[idx] == m) {
             histograma[idx] = m->Hist_next;
         }
-        if (m->Hist_prev){
+        if (m->Hist_prev) {
             m->Hist_prev->Hist_next = m->Hist_next;
         }
-        if (m->Hist_next){
+        if (m->Hist_next) {
             m->Hist_next->Hist_prev = m->Hist_prev;
         }
         m->Hist_next = nullptr;
         m->Hist_prev = nullptr;
-        return (char *)m + sizeof(*m);
+        return (char *) m + sizeof(*m);
     }
 
     MallocMetadata *last() {
-        MallocMetadata* tmp = sectorList.head;
-        if (!tmp){
+        MallocMetadata *tmp = sectorList.head;
+        if (!tmp) {
             return nullptr;
         }
-        while (tmp->next){
+        while (tmp->next) {
             tmp = tmp->next;
         }
         return tmp;
@@ -251,17 +253,17 @@ void *reallocMappedRegion(void *pVoid, size_t size);
 
 Hist hist = Hist();
 
-void* smalloc(size_t size){
-    if (size == 0 || size > MAX_SIZE){
+void* smalloc(size_t size) {
+    if (size == 0 || size > MAX_SIZE) {
         return nullptr;
     }
-    if (size >= MAX_SECTOR_SIZE){
+    if (size >= MAX_SECTOR_SIZE) {
         return newMappedRegion(size);
     }
     // Search for available sector.
-    MallocMetadata* tmp = hist.searchForFreeBlock(size);
-    if (tmp){
-        if (tmp->size > size + 128 + sizeof(*tmp)){
+    MallocMetadata *tmp = hist.searchForFreeBlock(size);
+    if (tmp) {
+        if (tmp->size > size + 128 + sizeof(*tmp)) {
             return hist.split(tmp, size);
         } else {
             tmp->is_free = false;
@@ -271,36 +273,37 @@ void* smalloc(size_t size){
         // Create new Sector.
     } else {
         size_t size_of_meta = sizeof(MallocMetadata);
-        MallocMetadata* new_sector = (MallocMetadata *)(sbrk(size + size_of_meta));
-        if (*(int*) new_sector == -1){
+        MallocMetadata *new_sector = (MallocMetadata *) (sbrk(size + size_of_meta));
+        if (*(int *) new_sector == -1) {
             return nullptr;
         }
         new_sector->is_free = false;
         new_sector->size = size;
         new_sector->real_size = size;
         sectorList.add(new_sector);
-        return (char *)new_sector + size_of_meta;
+        return (char *) new_sector + size_of_meta;
     }
 }
 
 void *newMappedRegion(size_t size) {
     size_t size_of_vm = sizeof(vm_area);
-    vm_area* new_area = (vm_area*)mmap(nullptr,size + size_of_vm, PROT_WRITE|PROT_READ, MAP_ANONYMOUS|MAP_PRIVATE, -1,0);
-    if (new_area == MAP_FAILED){
+    vm_area *new_area = (vm_area *) mmap(nullptr, size + size_of_vm, PROT_WRITE | PROT_READ,
+                                         MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+    if (new_area == MAP_FAILED) {
         return nullptr;
     }
     new_area->size = size;
-    new_area->addr = (char *)new_area + size_of_vm;
+    new_area->addr = (char *) new_area + size_of_vm;
     sectorList.addRegion(new_area);
     return new_area->addr;
 }
 
 void* scalloc(size_t num, size_t size) {
-    if (num== 0 || size == 0 || (size * num) > MAX_SIZE) {
+    if (num == 0 || size == 0 || (size * num) > MAX_SIZE) {
         return nullptr;
     }
-    if (size*num >= MAX_SECTOR_SIZE){
-        return newMappedRegion(size*num);
+    if (size * num >= MAX_SECTOR_SIZE) {
+        return newMappedRegion(size * num);
     }
     size *= num;
     int idx = hist.sizeToIdx(size);
@@ -308,8 +311,8 @@ void* scalloc(size_t num, size_t size) {
     void *res;
     // Search for available sector.
     tmp = hist.searchForFreeBlock(size); // Including wilderness
-    if (tmp){
-        if (tmp->size > size + 128 + sizeof(*tmp)){
+    if (tmp) {
+        if (tmp->size > size + 128 + sizeof(*tmp)) {
             res = hist.split(tmp, size);
             memset(res, 0, size);
             return res;
@@ -326,13 +329,13 @@ void* scalloc(size_t num, size_t size) {
     if (*(int *) new_sector == -1) {
         return nullptr;
     }
-    memset((char *)new_sector + size_of_meta, 0, size);
+    memset((char *) new_sector + size_of_meta, 0, size);
     new_sector->is_free = false;
     new_sector->size = size;
     new_sector->real_size = size;
     sectorList.add(new_sector);
     hist.add(new_sector, hist.sizeToIdx(new_sector->size));
-    return (char *)new_sector + size_of_meta;
+    return (char *) new_sector + size_of_meta;
 }
 
 void sfree(void* p) {
@@ -407,21 +410,21 @@ void sfree(void* p) {
     }
 }
 
-void* srealloc(void* oldp, size_t size){
-    if (size == 0 || size > MAX_SIZE){
+void* srealloc(void* oldp, size_t size) {
+    if (size == 0 || size > MAX_SIZE) {
         return nullptr;
     }
-    if (!oldp){
+    if (!oldp) {
         return smalloc(size);
     }
-    if (size >= MAX_SECTOR_SIZE){
+    if (size >= MAX_SECTOR_SIZE) {
         return reallocMappedRegion(oldp, size);
     }
     size_t size_of_meta = sizeof(MallocMetadata);
-    MallocMetadata* to_find = (MallocMetadata*)((char *)oldp - size_of_meta);
-    MallocMetadata* tmp = sectorList.head;
-    while (tmp){
-        if (tmp == to_find){
+    MallocMetadata *to_find = (MallocMetadata *) ((char *) oldp - size_of_meta);
+    MallocMetadata *tmp = sectorList.head;
+    while (tmp) {
+        if (tmp == to_find) {
             return _srealloc(tmp, size);
         }
         tmp = tmp->next;
@@ -431,23 +434,23 @@ void* srealloc(void* oldp, size_t size){
 }
 
 void *reallocMappedRegion(void *p, size_t size) {
-    vm_area* tmp = sectorList.mm_head;
+    vm_area *tmp = sectorList.mm_head;
     bool has_found = false;
-    while (tmp){
-        if (tmp->addr == p){
+    while (tmp) {
+        if (tmp->addr == p) {
             has_found = true;
             break;
         }
         tmp = tmp->next;
     }
-    if (!has_found){
+    if (!has_found) {
         return nullptr;
     }
-    void* res = newMappedRegion(size);
-    if (!res){
+    void *res = newMappedRegion(size);
+    if (!res) {
         return nullptr;
     }
-    if (tmp->size > size){
+    if (tmp->size > size) {
         memcpy(res, tmp->addr, size);
     } else {
         memcpy(res, tmp->addr, tmp->size);
